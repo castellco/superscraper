@@ -1,0 +1,515 @@
+---
+title: "How much does it cost to survive?"
+subtitle: "Exploring the prices of a basic food basket in Germany, Colombia and Peru"
+author: "Jasmin Huynh, Carolina Cornejo, Juan D Mendez"
+date: "2023-03-15"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Load packages
+
+```{r message=FALSE}
+library(RSelenium)
+library(xml2)
+library(magrittr)
+library(lubridate)
+library(tidyverse)
+library(httr)
+library(rvest)
+library(readr)
+library(XML)
+library(ggplot2)
+```
+
+# Set user-agent
+
+```{r}
+# Please change user agent before running the code
+set_config(
+  user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/111.0.0.0 Safari/537.36 Edg/111.0.1661.41; Carolina Cornejo / gcornejoc@putlook.com")
+)
+```
+
+## Create URL-lists to scrape from
+
+# Create vector containing all links
+
+We use vectors containing lists of product names to create URLs. The URLs lead to the search sites, meaning the URL that is created when using the search bar of the online-shop to search for a specific product. As we try to scrape a german, colombian and peruvian shop, the product lists are in german and spanish language. Later the product lists will also be used to clean the results from scraping.
+
+```{r}
+# Create product list and links for german shop
+products_de <- URLencode(
+            c("Brot",
+              "Mehl",
+              "Milch",
+              "Käse",
+              "Eier",
+              "Äpfel",
+              "Orangen",
+              "Bananen",
+              "Tomaten",
+              "Knoblauch",
+              "Linsen",
+              "Bohnen",
+              "Kartoffeln",
+              "Haferflocken",
+              "Reis",
+              "Zucker",
+              "Nüsse",
+              "Salz",
+              "Rindfleisch",
+              "Thunfisch",
+              "Schwein",
+              "Sonnenblumenöl",
+              "Bandnudeln"))
+
+links_de <- paste0(
+  "https://seidl-kulmbach.edeka.shop/index.php?stoken=7DC8E5C2&lang=0&cl=search&searchparam=",
+  products_de)
+
+# Create product list and links for colombian shop
+
+products_co <- URLencode(
+  c(
+  "Pan Tajado",
+  "Harina",
+  "Leche",
+  "Queso ",
+  "Huevo rojo",
+  "Manzana",
+  "Mandarina Comun",
+  "Platano",
+  "tomate",
+  "ajo",
+  "Lentejas",
+  "Frijol",
+  "Papas",
+  "Avena",
+  "Arroz",
+  "Azucar Blanca",
+  "Nueces",
+  "Sal marina",
+  "Carne",
+  "Atun",
+  "Pollo",
+  "Aceite Vegetal",
+  "Fideos"
+))
+
+links_co <- paste0(
+  "https://www.exito.com/",
+  products_co, "?_q=", products_co, "&map=ft")
+
+# Create product list and links for peruvian shop
+
+products_pe <- URLencode(
+  c(
+  "pan",
+  "harina",
+  "leche",
+  "queso",
+  "huevos",
+  "papaya",
+  "fresa",
+  "plátano",
+  "tomate",
+  "ajo molido",
+  "lenteja",
+  "frijol",
+  "papa",
+  "avena",
+  "arroz",
+  "azúcar",
+  "nueces",
+  "sal marina",
+  "carne de res",
+  "atún en aceite",
+  "pollo",
+  "aceite",
+  "fideo"
+))
+
+links_pe <- paste0(
+  "https://www.metro.pe/busca/?ft=",
+  products_pe)
+
+```
+
+
+# Create vector in English containing all product names
+
+This only serves informational purpose.
+
+```{r}
+products <- c("bread",
+  "flour",
+  "milk",
+  "cheese",
+  "eggs",
+  "apples",
+  "oranges",
+  "bananas",
+  "tomatoes",
+  "garlic",
+  "lentils",
+  "beans",
+  "potatoes",
+  "oatmeal",
+  "rice",
+  "sugar",
+  "nuts",
+  "salt",
+  "beef",
+  "tuna",
+  "pork",
+  "oil",
+  "noodles")
+```
+
+
+# Combine vectors to a dataframe for every country
+
+```{r}
+all_links_de <- data.frame(links_de, products, URLdecode(products_de)) %>% rename(products_de=URLdecode.products_de.)
+all_links_co <- data.frame(links_co, products, URLdecode(products_co)) %>% rename(products_co=URLdecode.products_co.)
+all_links_pe <- data.frame(links_pe, products, URLdecode(products_pe)) %>% rename(products_pe=URLdecode.products_pe.)
+
+# Remove vectors
+#rm(links_de, links_col, links_peru, products)
+```
+
+## Scraping the webshops
+
+# Create an empty dataframe to store the scraped results for each country
+
+```{r}
+basic_de <- data.frame(
+  names = character(),
+  prices = numeric(), 
+  prices_per_kg_l = numeric()
+)
+
+basic_co <- data.frame(
+  names = character(),
+  prices = numeric(), 
+  prices_per_kg_l = numeric()
+)
+
+basic_pe <- data.frame(
+  names = character(),
+  prices = numeric(), 
+  prices_per_kg_l = numeric()
+)
+
+```
+
+# Define a function to extract data from a single URL for every website
+
+For each webshop a function is defined. All three function use a URL and a product name in german or spanish as input. First the function for the german webshop is explained:
+
+The function "extract_data_de" first extracts the html-code from the URL and stores it in 'html_code'. Then the following steps are applied using this html-code:
+1. Extract product names: 
+A XPath is used to extract the names of all products which appear on the website when searching for the product. The extracted text is cleaned and whitespaces are trimmed.
+2. Extract product prices:
+A XPath is used to extract the corresponding prices of all products which appear on the website. The extracted prices are cleaned and whitespaces are removed with str_trim() and str_squish(). The strings are converted to numbers.
+3. Extract price per kilogramm or liter:
+A XPath is used to extract the corresponding prices per kg/l. The extracted prices are cleaned and whitespaces are removed with str_trim() and str_squish(). The strings are converted to numbers.
+4. The extracted information is combined into a dataframe 'product_table' which contains the extracted information of the search results from a single URL.
+5. As the listed search results also contain products which are not the searched products the table gets cleaned. This is achieved by using grepl() to only keep the rows where the product names contain a specific string, The string that is used is the product name that is used as input for the function.
+6. Finally only the cheapest product of the product table according to price per kilogramm or liter is kept and returned.
+
+```{r}
+# Germany
+
+extract_data_de <- function(url, product) {
+  
+  # Read html
+  html_code <- read_html(url)
+  
+  # Extract product names
+  names <- html_code %>% 
+    html_nodes(xpath = "//div[@class='listDetails']//a") %>%
+    html_text() %>%
+    str_replace_all("\\t|\\n", "") %>%
+    str_trim() 
+  
+  # Extract product prices
+  prices <- html_code %>%
+    html_nodes(xpath = "//div[@class='listDetails']//div[@class='article-price']") %>%
+    html_text() %>%
+    str_replace_all("\\n|\\*|€", "") %>%
+    str_trim() %>%
+    str_squish() %>%
+    readr::parse_number(., locale = readr::locale(decimal_mark = ",")) 
+  
+  # Extract price per kilogramm or liter
+  prices_per_kg_l <- html_code %>%
+    html_nodes(xpath = "//div[@class='listDetails']//div[@class='pricePerUnit']") %>%
+    html_text() %>%
+    str_replace_all("\\n|/kg|€", "") %>%
+    str_trim() %>%
+    str_squish() %>%
+    readr::parse_number(., locale = readr::locale(decimal_mark = ",")) 
+  
+  # Combine everything into a dataframe
+  product_table <- data.frame(names, prices, prices_per_kg_l)
+  
+  # Clean out everything that is not the searched product
+  product_table <- product_table[grepl(product, product_table$names, 
+  ignore.case = TRUE),]
+  rownames(product_table) <- NULL
+  
+  # Keep only the cheapest product according to price per kilogramm or liter
+  final <- product_table[which.min(product_table$prices_per_kg_l),]
+  
+  return(final)
+}
+```
+
+The colombian scraper quite works the same as the german with some added steps as some of the listed products contain a price per mg/ml and some don't. Also the price per mg/ml gets converted to price per kg/l. The final prices are converted to Euros.
+
+```{r}
+# Colombia
+
+# Run Selenium Server
+
+remDr <- rsDriver(port = 4568L, 
+                   version = "latest", 
+                   browser=c("chrome"), 
+                   chromever = "110.0.5481.77",  
+                   phantomver = "2.1.1",
+                   verbose = TRUE,
+                   check = TRUE)
+
+driver <- remDr$client
+
+extract_data_co <- function(url, product) {
+
+# Using Selenium to close popup, and using sys.sleep to make sure that webpage is fully loaded. 
+  
+Sys.sleep(5)
+driver$navigate(url)
+Sys.sleep(12)
+button1 <- driver$findElement(using = "css selector", value = ".exito-geolocation-3-x-cursorPointer")
+button1$clickElement()
+Sys.sleep(1)
+page_source <- driver$getPageSource()[[1]]
+
+# Extract product names
+
+  names <- page_source %>% 
+    read_html() %>%
+    xml_find_all("//h3[@class='vtex-store-components-3-x-productNameContainer mv0 t-heading-4']//span") %>%
+  xml_text()
+  
+  # Extract product prices.Prices where in different formats. 
+  
+  prices <- page_source %>% 
+  read_html() %>%
+  xml_find_all("//div[@class='exito-vtex-components-4-x-PricePDP']//text()") %>%
+  html_text() %>% 
+    # first extract all numbers
+  str_extract_all("\\d+") %>% 
+  lapply(paste, collapse = "") %>% 
+  unlist() %>%
+    # then extract only first numbers to avoid decimals.
+  sub("(^\\d{4}).*", "\\1", .) %>% 
+  readr::parse_number(locale = readr::locale(decimal_mark = ","))
+  
+  
+# Extract price per kilo. In this case, some of values per kilo were missed. For that purpose we made a loop to check if a child div was inside a parent divs. If so, extract the number, but if not, impute a Zero.
+ 
+parent_divs <- html_nodes(read_html(page_source), xpath = "//div[@class='flex mt0 mb0 pt0 pb0    justify-start vtex-flex-layout-0-x-flexRowContent vtex-flex-layout-0-x-flexRowContent--product-info-element items-stretch w-100']")
+
+# create an empty vector to store the extracted strings
+extracted_strings <- c()
+
+# loop over each parent div and check for the desired child div
+for (i in 1:length(parent_divs)) {
+  
+  # check if the desired div is present inside the current parent div
+  if (length(html_nodes(parent_divs[i], xpath = ".//div[@class='exito-vtex-components-4-x-validatePumValue f6 fw1 tl']")) > 0) {
+    
+    # if it is, extract the string and append it to the vector
+extracted_strings <- c(extracted_strings, html_text(html_nodes(parent_divs[i], xpath = ".//div[@class='exito-vtex-components-4-x-validatePumValue f6 fw1 tl']")))
+    
+  } else {
+    
+    # if it's not, append 0 to the vector
+    extracted_strings <- c(extracted_strings, 0)
+    
+  }
+  
+}
+
+# Extract the number of price per grams
+prices_per_kg_l <- extracted_strings %>% 
+  str_extract_all("\\d+(?:,\\d+)?(?:\\.\\d+)?") %>% unlist() %>% 
+  readr::parse_number(., locale = readr::locale(decimal_mark = ",")) 
+  
+  
+  # Combine everything in one dataframe, removing the values in 0 for prices per grams, transforming grams into Kilogramms, and making the change from Colombian pesos to Euros
+  product_table <- data.frame(names, prices, prices_per_kg_l) %>% 
+  filter(!prices_per_kg_l == 0.00) %>% 
+  mutate(prices_per_kg_l = prices_per_kg_l * 1000) %>% 
+  mutate(prices_per_kg_l = prices_per_kg_l / 5000,
+         prices = prices/ 5000)
+ 
+  # Clean out everything that is not the searched product
+  product_table <- product_table[grepl(product, product_table$names, ignore.case = TRUE),]
+  rownames(product_table) <- NULL
+  
+  # Keep only the cheapest product according to price per kilo
+  final <- product_table[which.min(product_table$prices_per_kg_l),]
+  
+  return(final)
+}
+
+```
+
+The peruvian scraper quite works the same as the german with some added steps to standardize the prices as the webshop doesn't contain one standardize price (e.g. price per kg/l) for the listed products.
+
+```{r}
+# Peru
+extract_data_pe <- function(url, product) {
+  product_names <- url %>%
+    read_html() %>%
+    html_nodes(xpath = "//div[@class='product-item__info']//a") %>%
+    html_text()
+
+  names <- product_names %>%
+    str_extract("[^\\d\\n].*?(?=\\d)") %>%
+    str_trim()
+
+  quantities <- product_names %>%
+    str_extract("\\d+(\\.\\d+)?") %>%
+    as.numeric()
+
+  units <- product_names %>%
+    str_replace(names, "") %>%
+    str_extract("\\s*[a-zA-Z]+") %>%
+    str_trim()
+  
+  prices <- url %>%
+      read_html() %>%
+      html_nodes(".product-prices__value--best-price") %>%
+      html_text() %>%
+      str_extract("\\d+\\.\\d+") %>%
+      as.numeric()
+  
+  # Combine everything into a dataframe
+  product_table_peru <- data.frame(names, quantities, units, prices)
+
+
+  rm(product_names)
+  
+  # Clean out everything that is not the searched product
+  product_table_peru <- product_table_peru[grepl(product,
+                                            product_table_peru$names,
+                                            ignore.case = TRUE
+                                            ), ]
+  
+  rownames(product_table_peru) <- NULL
+  
+  # Create the prices per kilo or liter column
+product_table_peru$prices_per_kg_l <- ifelse(product_table_peru$units == "un", product_table_peru$prices,
+                                                ifelse(product_table_peru$units == "g", product_table_peru$prices / product_table_peru$quantities * 1000,
+                                                       ifelse(product_table_peru$units == "ml", product_table_peru$prices / product_table_peru$quantities * 1000,
+                                                              ifelse(product_table_peru$units == "kg" & product_table_peru$quantities == 1, product_table_peru$prices,
+                                                                     NA
+                                                              )
+                                                       )
+                                                )
+)
+
+  # Keep only the cheapest product according to price per kilo/litro
+final_peru <- product_table_peru[which.min(product_table_peru$prices_per_kg_l),]
+
+return(final_peru)
+}
+
+```
+
+
+# Use lapply to extract data from all URLs
+
+To apply the extracting functions to all URLs 'laaply()' is used to loop over the dataframes. The columns which contain the URLs and the corresponding product names in german or spanish are passed as input to the functions.
+
+```{r}
+basic_list_de <- lapply(seq_len(nrow(all_links_de)), function(i) {
+  extract_data_de(all_links_de$links[i], all_links_de$products_de[i])
+})
+
+basic_list_co <- lapply(seq_len(nrow(all_links_co)), function(i) {
+  extract_data_co(all_links_co$links[i], all_links_co$products_co[i])
+})
+
+basic_list_pe <- lapply(seq_len(nrow(all_links_pe)), function(i) {
+  extract_data_pe(all_links_pe$links[i], all_links_pe$products_pe[i])
+})
+
+# Close browser and server
+
+driver$close()
+remDr$server$stop()
+# clean up
+gc()
+
+```
+
+# Combine results into data frame
+
+```{r}
+basic_de <- do.call(rbind, basic_list_de)
+rownames(basic_de) <- NULL   # reset index of dataframe
+
+basic_co <- do.call(rbind, basic_list_co)
+rownames(basic_co) <- NULL # reset index of dataframe 
+
+basic_pe <- do.call(rbind, basic_list_pe)
+rownames(basic_pe) <- NULL # reset index of dataframe
+
+# Change from "soles" to "euros for the peruvian prices
+basic_pe$prices <- round(basic_pe$prices*0.25, 2)
+```
+
+# How much is the approximate amount that a citizen spends for basic necessities in Germany, Colombia and Peru compared to the minimum living wage?
+
+The wages per week are from Wikipedia: https://en.wikipedia.org/wiki/List_of_countries_by_minimum_wage
+
+```{r}
+# Create a data frame containing the information for each country
+
+df_countries <- data.frame(
+  country = c("germany", "colombia", "perú"),
+  total = c(sum(basic_de$prices), sum(as.numeric(basic_co$prices)), sum(basic_pe$prices)),
+  minimum_wage_wk = c(528.42, 69.26, 69.26)
+)
+
+df_countries$prop <- df_countries$total/df_countries$minimum_wage_wk
+```
+
+# Plot the results
+
+```{r}
+# Create the plot
+ggplot(df_countries, aes(x = country, y = total)) +
+  geom_bar(stat = "identity", fill = "lightblue") +
+  labs(x = "Country", y = "Total", title = "Comparison of shopping cart value") +
+  theme_minimal() 
+```
+
+```{r}
+ggplot(df_countries, aes(x = country, y = prop)) +
+  geom_bar(stat = "identity", fill = "lightblue") +
+  labs(x = "Country", y = "Proportion", title = "Comparison of minimum wage spent") +
+  theme_minimal() 
+```
+
+As can be seen, taking as a reference the prices in Euros, there are notorious differences in the amount spent by citizens in these countries. The country that spends the least is Colombia, followed by Germany, and followed by Peru.
+
+However, then considering the weekly minimum wage of each country, the proportion varies. Peru is the country in which people spends the most, in a general sense but also as a proportion of their mimimum age. On the other hand, Germany is the country that spends the least in comparison with their minimum wage. 
